@@ -24,7 +24,6 @@
 package xts
 
 import (
-	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
 	"errors"
@@ -68,42 +67,14 @@ func NewCipher(cipherFunc func([]byte) (cipher.Block, error), key []byte) (*Ciph
 		return nil, errors.New("xts: cipher does not have a block size of 16")
 	}
 
-	// Enable the fused kernel only for AES on a supported architecture. We
-	// detect AES by re-deriving a schedule from the data key half; if the
-	// caller passed a non-AES cipherFunc the data-key length will not be a
-	// valid AES key size and we stay on the portable path.
-	dataKey := key[:len(key)/2]
-	if accelAvailable && isAESKeyLen(len(dataKey)) && isAESCipher(cipherFunc) {
-		c.enc = expandEnc(dataKey)
-		c.dec = expandDec(dataKey)
-		c.rounds = len(dataKey)/4 + 6
-		c.accelerated = true
-	}
+	// Enable the fused assembly kernel only for AES on a supported
+	// architecture. trySetupAccel is defined per architecture: on amd64/arm64
+	// it detects AES and builds the round-key schedules; on every other
+	// architecture it is a no-op that returns false, so the portable per-block
+	// path is used. Keeping the accelerated machinery out of the shared code on
+	// unsupported architectures means those builds carry no dead statements.
+	c.accelerated = c.trySetupAccel(cipherFunc, key)
 	return c, nil
-}
-
-func isAESKeyLen(n int) bool { return n == 16 || n == 24 || n == 32 }
-
-// isAESCipher reports whether cipherFunc is crypto/aes.NewCipher by comparing
-// the block produced against a freshly created AES block of the same concrete
-// type. This guards the accelerated path so that a custom 16-byte block cipher
-// never gets silently replaced by AES.
-func isAESCipher(cipherFunc func([]byte) (cipher.Block, error)) bool {
-	probe := make([]byte, 16)
-	b, err := cipherFunc(probe)
-	if err != nil {
-		return false
-	}
-	ref, _ := aes.NewCipher(probe)
-	// crypto/aes returns *aes.Block; comparing the encryption of a known
-	// vector is the most robust cross-version check.
-	var in, gotB, gotRef [16]byte
-	for i := range in {
-		in[i] = byte(i)
-	}
-	b.Encrypt(gotB[:], in[:])
-	ref.Encrypt(gotRef[:], in[:])
-	return gotB == gotRef
 }
 
 // Encrypt encrypts a sector of plaintext into ciphertext using the given sector
@@ -118,12 +89,9 @@ func (c *Cipher) Encrypt(ciphertext, plaintext []byte, sectorNum uint64) {
 	}
 
 	tweak := c.tweak(sectorNum)
-	if c.accelerated {
-		copy(ciphertext, plaintext)
-		xtsEncSectorAsm(ciphertext[:len(plaintext)], &c.enc[0], c.rounds, &tweak[0])
-		return
+	if !c.encAccel(ciphertext, plaintext, &tweak) {
+		c.cryptBlocks(ciphertext, plaintext, &tweak, true)
 	}
-	c.cryptBlocks(ciphertext, plaintext, &tweak, true)
 }
 
 // Decrypt decrypts a sector of ciphertext into plaintext using the given sector
@@ -137,12 +105,9 @@ func (c *Cipher) Decrypt(plaintext, ciphertext []byte, sectorNum uint64) {
 	}
 
 	tweak := c.tweak(sectorNum)
-	if c.accelerated {
-		copy(plaintext, ciphertext)
-		xtsDecSectorAsm(plaintext[:len(ciphertext)], &c.dec[0], c.rounds, &tweak[0])
-		return
+	if !c.decAccel(plaintext, ciphertext, &tweak) {
+		c.cryptBlocks(plaintext, ciphertext, &tweak, false)
 	}
-	c.cryptBlocks(plaintext, ciphertext, &tweak, false)
 }
 
 // tweak computes the initial XTS tweak T0 = E_k2(sectorNum) for a sector.
