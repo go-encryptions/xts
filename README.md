@@ -40,6 +40,8 @@ c.Decrypt(plaintext, ciphertext, sectorNum)
 
 `Encrypt` and `Decrypt` operate on a whole disk sector at a time; `sectorNum` is the tweak (the sector index). Buffers must be a whole number of 16-byte blocks and at least one block long, matching the `x/crypto/xts` contract.
 
+`Encrypt` and `Decrypt` do not allocate: the tweak buffer comes from a `sync.Pool`, as in `golang.org/x/crypto/xts`; `TestNoAllocPerSector` pins it.
+
 ## Guarantees
 
 - **Byte-identical output** to `golang.org/x/crypto/xts` on every architecture, verified in CI against `x/crypto` as a reference oracle.
