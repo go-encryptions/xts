@@ -94,7 +94,10 @@ func TestKnownAnswerVectors(t *testing.T) {
 // key sizes, sector sizes, sector numbers and the accelerated vs portable path.
 func TestMatchesReference(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
-	for _, keyLen := range []int{32, 64} {
+	// 48 is AES-192, whose 12 rounds take their own entry into the unrolled
+	// 8-wide kernel. The sizes reach every path: 8-wide groups (128 bytes),
+	// the 4-wide groups and the 1-3 block tail after them.
+	for _, keyLen := range []int{32, 48, 64} {
 		key := make([]byte, keyLen)
 		rng.Read(key)
 		ours, err := NewCipher(aes.NewCipher, key)
@@ -105,7 +108,7 @@ func TestMatchesReference(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, n := range []int{16, 32, 48, 64, 80, 128, 496, 512, 4096} {
+		for _, n := range []int{16, 32, 48, 64, 80, 128, 144, 192, 208, 240, 256, 496, 512, 4096} {
 			pt := make([]byte, n)
 			rng.Read(pt)
 			for _, sec := range []uint64{0, 1, 2, 7, 255, 1 << 20, 0x123456789a} {

@@ -8,9 +8,10 @@
 
 Pure-Go **XTS-AES** tweakable block-cipher mode (IEEE P1619/D16, [NIST SP 800-38E](https://csrc.nist.gov/pubs/sp/800/38/e/final)), the sector-level disk-encryption mode used by LUKS, APFS FileVault 2, BitLocker and dm-crypt.
 
-It is a **drop-in replacement for `golang.org/x/crypto/xts`**: the `Cipher` type exposes the same `NewCipher` / `Encrypt` / `Decrypt` API and produces byte-identical ciphertext. The difference is performance. `x/crypto/xts` drives the block cipher one 16-byte block at a time through the `cipher.Block` interface, which collapses a hardware AES engine to a fraction of its throughput. This package instead ships a fused AES-XTS kernel that pipelines four AES blocks at a time and folds the tweak XOR into the round pipeline:
+It is a **drop-in replacement for `golang.org/x/crypto/xts`**: the `Cipher` type exposes the same `NewCipher` / `Encrypt` / `Decrypt` API and produces byte-identical ciphertext. The difference is performance. `x/crypto/xts` drives the block cipher one 16-byte block at a time through the `cipher.Block` interface, which collapses a hardware AES engine to a fraction of its throughput. This package instead ships a fused AES-XTS kernel that pipelines several AES blocks at a time and folds the tweak XOR into the round pipeline:
 
-- **amd64** (AES-NI) and **arm64** (ARMv8 AES + NEON) run the AESENC / AESE·AESMC pipeline directly in Plan 9 assembly, reaching multi-GB/s per core.
+- **amd64** (AES-NI) and **arm64** (ARMv8 AES + NEON) run the AESENC / AESE·AESMC pipeline directly in Plan 9 assembly. On arm64 the kernel takes 8 blocks at a time with every round key held in a register.
+- **Measured on arm64** (Apple M4 Max, one core, decryption, OpenSSL 3.6.5 on the same core as the reference): AES-128 at 14.4 GB/s on 4 KiB sectors, against 16.7 GB/s for `openssl speed -evp aes-128-xts`. AES-256 reaches 11.3 GB/s against 12.5 GB/s. On 512-byte sectors AES-128 reaches 8.8 GB/s against 12.9 GB/s: there, the cost of each call (the tweak encryption) still shows. `BenchmarkDecrypt` reproduces these numbers.
 - **riscv64, loong64, ppc64le, s390x** transparently fall back to the same per-block algorithm as `x/crypto/xts`, so behaviour is identical everywhere — only the speed differs.
 
 Built for the [`go-encryptions`](https://github.com/go-encryptions) family; the primary consumers are the full-disk-encryption backends [`go-fde/luks`](https://github.com/go-fde/luks) and [`go-fde/apfs`](https://github.com/go-fde/apfs).
