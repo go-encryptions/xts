@@ -11,7 +11,16 @@ Pure-Go **XTS-AES** tweakable block-cipher mode (IEEE P1619/D16, [NIST SP 800-38
 It is a **drop-in replacement for `golang.org/x/crypto/xts`**: the `Cipher` type exposes the same `NewCipher` / `Encrypt` / `Decrypt` API and produces byte-identical ciphertext. The difference is performance. `x/crypto/xts` drives the block cipher one 16-byte block at a time through the `cipher.Block` interface, which collapses a hardware AES engine to a fraction of its throughput. This package instead ships a fused AES-XTS kernel that pipelines several AES blocks at a time and folds the tweak XOR into the round pipeline:
 
 - **amd64** (AES-NI) and **arm64** (ARMv8 AES + NEON) run the AESENC / AESE·AESMC pipeline directly in Plan 9 assembly. On arm64 the kernel takes 8 blocks at a time with every round key held in a register.
-- **Measured on arm64** (Apple M4 Max, one core, decryption, OpenSSL 3.6.5 on the same core as the reference): AES-128 at 14.4 GB/s on 4 KiB sectors, against 16.7 GB/s for `openssl speed -evp aes-128-xts`. AES-256 reaches 11.3 GB/s against 12.5 GB/s. On 512-byte sectors AES-128 reaches 8.8 GB/s against 12.9 GB/s: there, the cost of each call (the tweak encryption) still shows. `BenchmarkDecrypt` reproduces these numbers.
+- **Measured on arm64** against OpenSSL 3.6.5 on the same machine: Apple M4 Max, one core, decryption. The reference command is `openssl speed -evp aes-*-xts -bytes N`. The figures come from 6 interleaved rounds by `abbench --max-load 8`, and each is its share of OpenSSL's throughput:
+
+  | | `Decrypt` (one sector per call) | `DecryptSectors` (1 MiB per call) |
+  |---|---|---|
+  | AES-128, 512 B | 86 % | **112 %** |
+  | AES-128, 4 KiB | 99 % | **102 %** |
+  | AES-256, 512 B | 92 % | **117 %** |
+  | AES-256, 4 KiB | **103 %** | **107 %** |
+
+  The machine's absolute speed varies with its load, so the table gives ratios rather than GB/s; OpenSSL ran right after the rounds. With one sector per call, small sectors still pay for the tweak encryption that begins each sector. `DecryptSectors` encrypts the tweaks of 8 sectors at a time instead. `BenchmarkDecrypt` and `BenchmarkDecryptSectors` reproduce the table.
 - **riscv64, loong64, ppc64le, s390x** transparently fall back to the same per-block algorithm as `x/crypto/xts`, so behaviour is identical everywhere — only the speed differs.
 
 Built for the [`go-encryptions`](https://github.com/go-encryptions) family; the primary consumers are the full-disk-encryption backends [`go-fde/luks`](https://github.com/go-fde/luks) and [`go-fde/apfs`](https://github.com/go-fde/apfs).
