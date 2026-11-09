@@ -135,6 +135,17 @@ func TestMatchesReference(t *testing.T) {
 	}
 }
 
+// TestEmptySector: an empty sector is a no-op, as in x/crypto/xts, on the
+// accelerated path that takes no address of its first byte.
+func TestEmptySector(t *testing.T) {
+	c, err := NewCipher(aes.NewCipher, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Encrypt(nil, nil, 1)
+	c.Decrypt(nil, nil, 1)
+}
+
 // TestInPlace verifies that dst==src (in-place) works for both directions.
 func TestInPlace(t *testing.T) {
 	key := make([]byte, 64)

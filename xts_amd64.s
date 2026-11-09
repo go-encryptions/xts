@@ -134,6 +134,31 @@ enc_done:
 	MOVUPS	X4, (DI)
 	RET
 
+// func aesEncBlockAsm(p *byte, enc *byte, rounds int)
+//
+// One AES block, in place: the tweak T0 = E_k2(sector), without the
+// cipher.Block interface call (and the heap escape) that made each sector
+// pay for a pool round trip.
+TEXT ·aesEncBlockAsm(SB), NOSPLIT, $0-24
+	MOVQ	p+0(FP), SI
+	MOVQ	enc+8(FP), R13
+	MOVQ	rounds+16(FP), R14
+	MOVUPS	(SI), X0
+	MOVUPS	(R13), X8
+	PXOR	X8, X0
+	ADDQ	$16, R13
+	SUBQ	$1, R14
+blk_round:
+	MOVUPS	(R13), X8
+	AESENC	X8, X0
+	ADDQ	$16, R13
+	SUBQ	$1, R14
+	JNZ	blk_round
+	MOVUPS	(R13), X8
+	AESENCLAST	X8, X0
+	MOVUPS	X0, (SI)
+	RET
+
 // func xtsDecSectorAsm(p []byte, dec *byte, rounds int, tweak *byte)
 TEXT ·xtsDecSectorAsm(SB), NOSPLIT, $0-48
 	MOVQ	p_base+0(FP), SI

@@ -16,6 +16,18 @@ const accelAvailable = true
 //go:noescape
 func xtsEncSectorAsm(p []byte, enc *byte, rounds int, tweak *byte)
 
+// aesEncBlockAsm encrypts the 16 bytes at p in place with the flat
+// encryption schedule enc (rounds+1 keys): the XTS tweak T0 = E_k2(sector).
+//
+//go:noescape
+func aesEncBlockAsm(p *byte, enc *byte, rounds int)
+
+// encTweaks8 encrypts the 8 blocks at p (128 bytes) in place with enc,
+// interleaved 8-wide: the T0 of 8 sectors in the latency of one.
+//
+//go:noescape
+func encTweaks8(p *[8 * blockSize]byte, enc *byte, rounds int)
+
 // xtsDecSectorAsm decrypts p in place using AES-XTS. dec is the AESD-ready
 // decryption schedule (InvMixColumns folded into the inner round keys).
 //

@@ -62,20 +62,29 @@
 	VLD1.P	64(R8), [V24.B16, V25.B16, V26.B16, V27.B16]; \
 	VLD1	(R8), [V28.B16, V29.B16, V30.B16]
 
-// gpr_double doubles the tweak held in R14 (low) / R15 (high).
+// gpr_double doubles the tweak held in R14 (low) / R15 (high) in four
+// instructions, as OpenSSL's aesv8-armx does:
+//   R11 = (hi >> 63, arithmetic) & 0x87     the reduction, or 0
+//   hi  = (hi:lo) >> 63                     EXTR: hi<<1 | lo>>63
+//   lo  = (lo << 1) ^ R11                   shifted operand, no LSL
+// The EXTR reads the old low half before the EOR replaces it.
 #define gpr_double \
 	ASR	$63, R15, R11; \
 	AND	R13, R11, R11; \
-	LSR	$63, R14, R12; \
-	LSL	$1, R14, R14; \
-	LSL	$1, R15, R15; \
-	ORR	R12, R15, R15; \
-	EOR	R11, R14, R14
+	EXTR	$63, R14, R15, R15; \
+	EOR	R14<<1, R11, R14
 
-// put_tweak copies the GPR tweak into V and doubles the GPR tweak.
-#define put_tweak(V) \
-	VMOV	R14, V.D[0]; \
-	VMOV	R15, V.D[1]; \
+// put_tweak(OFF) stores the GPR tweak at OFF(R10) and doubles it. The 8
+// tweaks of a group go through a 128-byte stack buffer and come back with
+// two 4-register loads: integer and memory units only. Moving each half
+// into a vector lane (INS) took the vector pipes the AES rounds need, and
+// so did computing the tweaks with PMULL (measured: slower than both).
+//
+// The second half of the buffer, 128 bytes on, holds T ^ k_last (R19/R20
+// are the last round key's halves): the end of each block then needs one
+// vector XOR instead of two, and the XOR is paid on the integer side.
+#define put_tweak(OFF) \
+	STP	(R14, R15), OFF(R10); \
 	gpr_double
 
 #define xor8_tweaks \
@@ -135,7 +144,10 @@
 #define tweak_to_gpr \
 	VMOV	V8.D[0], R14; \
 	VMOV	V8.D[1], R15; \
-	MOVD	$0x87, R13
+	MOVD	$0x87, R13; \
+	MOVD	$tws-256(SP), R10; \
+	ADD	R3<<4, R2, R21; \
+	LDP	(R21), (R19, R20)
 
 #define tweak_to_v8 \
 	VMOV	R14, V8.D[0]; \
@@ -144,8 +156,11 @@
 // load8 computes the 8 tweaks, loads 8 blocks at R0 (R7 = R0+64) and XORs
 // them with their tweaks; store8 XORs the last key and the tweaks and stores.
 #define load8 \
-	put_tweak(V8); put_tweak(V9); put_tweak(V10); put_tweak(V11); \
-	put_tweak(V12); put_tweak(V13); put_tweak(V14); put_tweak(V15); \
+	put_tweak(0); put_tweak(16); put_tweak(32); put_tweak(48); \
+	put_tweak(64); put_tweak(80); put_tweak(96); put_tweak(112); \
+	ADD	$64, R10, R12; \
+	VLD1	(R10), [V8.B16, V9.B16, V10.B16, V11.B16]; \
+	VLD1	(R12), [V12.B16, V13.B16, V14.B16, V15.B16]; \
 	ADD	$64, R0, R7; \
 	VLD1	(R0), [V0.B16, V1.B16, V2.B16, V3.B16]; \
 	VLD1	(R7), [V4.B16, V5.B16, V6.B16, V7.B16]; \
@@ -169,7 +184,7 @@
 //
 // Groups of 8 blocks take the 8-wide path above; what is left (under 128
 // bytes) is pipelined 4-wide, then a tail loop handles the final 1-3 blocks.
-TEXT ·xtsEncSectorAsm(SB), NOSPLIT, $0-48
+TEXT ·xtsEncSectorAsm(SB), NOSPLIT, $256-48
 	MOVD	p_base+0(FP), R0	// data pointer
 	MOVD	p_len+8(FP), R1		// data length
 	MOVD	enc+24(FP), R2		// round-key pointer
@@ -307,11 +322,60 @@ enc_done:
 	VST1	[V8.B16], (R4)		// store updated tweak
 	RET
 
+// func aesEncBlockAsm(p *byte, enc *byte, rounds int)
+//
+// One AES block, in place: the tweak T0 = E_k2(sector), without the
+// cipher.Block interface call (and the heap escape) that made each sector
+// pay for a pool round trip.
+TEXT ·aesEncBlockAsm(SB), NOSPLIT, $0-24
+	MOVD	p+0(FP), R0
+	MOVD	enc+8(FP), R8
+	MOVD	rounds+16(FP), R9
+	VLD1	(R0), [V0.B16]
+	SUB	$1, R9
+blk_round:
+	VLD1.P	16(R8), [V14.B16]
+	AESE	V14.B16, V0.B16
+	AESMC	V0.B16, V0.B16
+	SUBS	$1, R9
+	BNE	blk_round
+	VLD1.P	16(R8), [V14.B16]
+	AESE	V14.B16, V0.B16
+	VLD1	(R8), [V14.B16]
+	VEOR	V0.B16, V14.B16, V0.B16
+	VST1	[V0.B16], (R0)
+	RET
+
+// func encTweaks8(p *byte, enc *byte, rounds int)
+//
+// 8 blocks at p, in place, 8-wide: the tweaks T0 of 8 sectors. The round
+// keys are streamed into V16 once per round for all 8 blocks.
+TEXT ·encTweaks8(SB), NOSPLIT, $0-24
+	MOVD	p+0(FP), R0
+	MOVD	enc+8(FP), R8
+	MOVD	rounds+16(FP), R9
+	ADD	$64, R0, R7
+	VLD1	(R0), [V0.B16, V1.B16, V2.B16, V3.B16]
+	VLD1	(R7), [V4.B16, V5.B16, V6.B16, V7.B16]
+	SUB	$1, R9
+tw8_round:
+	VLD1.P	16(R8), [V16.B16]
+	enc8(V16)
+	SUBS	$1, R9
+	BNE	tw8_round
+	VLD1.P	16(R8), [V16.B16]
+	enc8last(V16)
+	VLD1	(R8), [V16.B16]
+	xor8(V16)
+	VST1	[V0.B16, V1.B16, V2.B16, V3.B16], (R0)
+	VST1	[V4.B16, V5.B16, V6.B16, V7.B16], (R7)
+	RET
+
 // func xtsDecSectorAsm(p []byte, dec *byte, rounds int, tweak *byte)
 // dec points to the decryption round-key schedule with AESIMC pre-applied to
 // the inner round keys (so AESD/AESIMC consume them directly). Layout: the keys
 // are in forward order [rk0 .. rkN]; decryption consumes them in reverse.
-TEXT ·xtsDecSectorAsm(SB), NOSPLIT, $0-48
+TEXT ·xtsDecSectorAsm(SB), NOSPLIT, $256-48
 	MOVD	p_base+0(FP), R0
 	MOVD	p_len+8(FP), R1
 	MOVD	dec+24(FP), R2

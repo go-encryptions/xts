@@ -48,6 +48,7 @@ type Cipher struct {
 	// kernel. dec already has InvMixColumns folded in for the inner rounds.
 	enc    []byte
 	dec    []byte
+	tenc   []byte // encryption schedule of k2, for the tweak
 	rounds int
 }
 
@@ -89,10 +90,11 @@ func (c *Cipher) Encrypt(ciphertext, plaintext []byte, sectorNum uint64) {
 		panic("xts: plaintext is not a multiple of the block size")
 	}
 
-	tweak := c.tweak(sectorNum)
-	if !c.encAccel(ciphertext, plaintext, tweak) {
-		c.cryptBlocks(ciphertext, plaintext, tweak, true)
+	if c.encAccel(ciphertext, plaintext, sectorNum) {
+		return
 	}
+	tweak := c.tweak(sectorNum)
+	c.cryptBlocks(ciphertext, plaintext, tweak, true)
 	tweakPool.Put(tweak)
 }
 
@@ -106,18 +108,59 @@ func (c *Cipher) Decrypt(plaintext, ciphertext []byte, sectorNum uint64) {
 		panic("xts: ciphertext is not a multiple of the block size")
 	}
 
-	tweak := c.tweak(sectorNum)
-	if !c.decAccel(plaintext, ciphertext, tweak) {
-		c.cryptBlocks(plaintext, ciphertext, tweak, false)
+	if c.decAccel(plaintext, ciphertext, sectorNum) {
+		return
 	}
+	tweak := c.tweak(sectorNum)
+	c.cryptBlocks(plaintext, ciphertext, tweak, false)
 	tweakPool.Put(tweak)
 }
 
-// tweakPool holds tweak buffers. A tweak on the stack escapes to the heap
-// through the cipher.Block call that encrypts it -- one allocation per
-// sector, measured: 620 per read of an APFS FileVault file against 12 when
-// plain. A pooled buffer is already on the heap. golang.org/x/crypto/xts
-// does the same (its tweakPool).
+// DecryptSectors decrypts consecutive sectors of sectorSize bytes:
+// ciphertext[i*sectorSize:(i+1)*sectorSize] is sector firstSector+i. The
+// result is that of calling Decrypt on each sector; on amd64 and arm64 it is
+// faster, because the tweaks of 8 sectors are encrypted together instead of
+// one serial AES per sector. plaintext and ciphertext must overlap entirely
+// or not at all; sectorSize must be a positive multiple of 16 and
+// len(ciphertext) a multiple of sectorSize.
+func (c *Cipher) DecryptSectors(plaintext, ciphertext []byte, sectorSize int, firstSector uint64) {
+	c.sectors(plaintext, ciphertext, sectorSize, firstSector, false)
+}
+
+// EncryptSectors is the encryption counterpart of DecryptSectors.
+func (c *Cipher) EncryptSectors(ciphertext, plaintext []byte, sectorSize int, firstSector uint64) {
+	c.sectors(ciphertext, plaintext, sectorSize, firstSector, true)
+}
+
+func (c *Cipher) sectors(dst, src []byte, sectorSize int, first uint64, encrypt bool) {
+	if sectorSize <= 0 || sectorSize%blockSize != 0 {
+		panic("xts: sector size is not a positive multiple of the block size")
+	}
+	if len(src)%sectorSize != 0 {
+		panic("xts: data is not a whole number of sectors")
+	}
+	if len(dst) < len(src) {
+		panic("xts: output is smaller than input")
+	}
+	if c.sectorsAccel(dst, src, sectorSize, first, encrypt) {
+		return
+	}
+	for i := 0; i < len(src); i += sectorSize {
+		n := first + uint64(i/sectorSize)
+		if encrypt {
+			c.Encrypt(dst[i:i+sectorSize], src[i:i+sectorSize], n)
+		} else {
+			c.Decrypt(dst[i:i+sectorSize], src[i:i+sectorSize], n)
+		}
+	}
+}
+
+// tweakPool holds tweak buffers for the portable path. A tweak on the stack
+// escapes to the heap through the cipher.Block call that encrypts it -- one
+// allocation per sector, measured: 620 per read of an APFS FileVault file
+// against 12 when plain. A pooled buffer is already on the heap.
+// golang.org/x/crypto/xts does the same (its tweakPool). The accelerated
+// path encrypts its tweak in assembly and needs neither.
 var tweakPool = sync.Pool{New: func() any { return new([blockSize]byte) }}
 
 // tweak computes the initial XTS tweak T0 = E_k2(sectorNum) for a sector,

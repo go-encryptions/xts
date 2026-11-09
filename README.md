@@ -37,11 +37,18 @@ if err != nil { /* ... */ }
 
 c.Encrypt(ciphertext, plaintext, sectorNum) // one 512/4096-byte sector
 c.Decrypt(plaintext, ciphertext, sectorNum)
+
+// Many consecutive sectors in one call: sector firstSector+i is
+// ciphertext[i*512:(i+1)*512].
+c.DecryptSectors(plaintext, ciphertext, 512, firstSector)
+c.EncryptSectors(ciphertext, plaintext, 512, firstSector)
 ```
 
 `Encrypt` and `Decrypt` operate on a whole disk sector at a time; `sectorNum` is the tweak (the sector index). Buffers must be a whole number of 16-byte blocks and at least one block long, matching the `x/crypto/xts` contract.
 
-`Encrypt` and `Decrypt` do not allocate: the tweak buffer comes from a `sync.Pool`, as in `golang.org/x/crypto/xts`; `TestNoAllocPerSector` pins it.
+`DecryptSectors` and `EncryptSectors` give exactly what `Decrypt` and `Encrypt` give sector by sector (`TestSectorsMatchPerSector`). A disk reader that decrypts a run of sectors should use them. On arm64 they encrypt the tweaks of 8 sectors in one 8-wide AES pass. Called once per sector, each sector would instead start by waiting for its own tweak, about ten AES rounds of latency that nothing can overlap. That wait is what small sectors pay the most for.
+
+None of these allocate (`TestNoAllocPerSector`). On amd64 and arm64 the tweak is encrypted in assembly and stays on the stack. The portable path takes its tweak buffer from a `sync.Pool`, as `golang.org/x/crypto/xts` does.
 
 ## Guarantees
 
