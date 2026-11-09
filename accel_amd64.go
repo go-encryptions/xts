@@ -16,6 +16,21 @@ var accelAvailable = cpu.X86.HasAES && cpu.X86.HasSSE3
 //go:noescape
 func xtsEncSectorAsm(p []byte, enc *byte, rounds int, tweak *byte)
 
+// aesEncBlockAsm encrypts the 16 bytes at p in place with the flat
+// encryption schedule enc (rounds+1 keys): the XTS tweak T0 = E_k2(sector).
+//
+//go:noescape
+func aesEncBlockAsm(p *byte, enc *byte, rounds int)
+
+// encTweaks8 encrypts the 8 blocks at p (128 bytes) in place with enc. On
+// amd64 it is 8 single-block calls: the batching that pays on arm64 has not
+// been written for AES-NI yet, and this keeps one sectorsAccel for both.
+func encTweaks8(p *[8 * blockSize]byte, enc *byte, rounds int) {
+	for j := 0; j < 8; j++ {
+		aesEncBlockAsm(&p[blockSize*j], enc, rounds)
+	}
+}
+
 // xtsDecSectorAsm decrypts p in place using AES-XTS (AES-NI). dec is the
 // AESDEC-ready schedule built by expandDec.
 //

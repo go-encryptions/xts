@@ -18,11 +18,17 @@ func (c *Cipher) trySetupAccel(cipherFunc func([]byte) (cipher.Block, error), ke
 }
 
 // encAccel always declines, so Encrypt uses the portable path.
-func (c *Cipher) encAccel(ciphertext, plaintext []byte, tweak *[blockSize]byte) bool {
+func (c *Cipher) encAccel(ciphertext, plaintext []byte, sectorNum uint64) bool {
+	return false
+}
+
+// sectorsAccel always declines, so DecryptSectors / EncryptSectors call
+// Decrypt / Encrypt per sector.
+func (c *Cipher) sectorsAccel(dst, src []byte, sectorSize int, first uint64, encrypt bool) bool {
 	return false
 }
 
 // decAccel always declines, so Decrypt uses the portable path.
-func (c *Cipher) decAccel(plaintext, ciphertext []byte, tweak *[blockSize]byte) bool {
+func (c *Cipher) decAccel(plaintext, ciphertext []byte, sectorNum uint64) bool {
 	return false
 }
