@@ -105,3 +105,94 @@ func TestBatchMatchesReference(t *testing.T) {
 		t.Fatalf("EncryptSectors: %d batch calls (want 4), equal=%v", calls, bytes.Equal(got, want))
 	}
 }
+
+// batchPair is a Blocks Twofish XTS cipher and x/crypto/xts over the same
+// key, for the tests that compare the two.
+func batchPair(t *testing.T) (ours *Cipher, ref *xref.Cipher, calls *int) {
+	t.Helper()
+	key := make([]byte, 64)
+	for i := range key {
+		key[i] = byte(5*i + 1)
+	}
+	calls = new(int)
+	newBatch := func(k []byte) (cipher.Block, error) {
+		b, err := twofish.NewCipher(k)
+		return batchCipher{b, calls}, err
+	}
+	var err error
+	if ours, err = NewCipher(newBatch, key); err != nil {
+		t.Fatal(err)
+	}
+	if ref, err = xref.NewCipher(newTwofish, key); err != nil {
+		t.Fatal(err)
+	}
+	return ours, ref, calls
+}
+
+// TestBatchEverySize compares both directions with x/crypto/xts, out of
+// place, at every size from one block to 4096 bytes.
+func TestBatchEverySize(t *testing.T) {
+	ours, ref, _ := batchPair(t)
+	for size := blockSize; size <= 4096; size += blockSize {
+		pt := make([]byte, size)
+		for i := range pt {
+			pt[i] = byte(i*29 + size)
+		}
+		sec := uint64(size) * 977
+		want := make([]byte, size)
+		ref.Encrypt(want, pt, sec)
+		got := make([]byte, size)
+		ours.Encrypt(got, pt, sec)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("Encrypt size %d differs from x/crypto/xts", size)
+		}
+		wantPT := make([]byte, size)
+		ref.Decrypt(wantPT, want, sec)
+		gotPT := make([]byte, size)
+		ours.Decrypt(gotPT, want, sec)
+		if !bytes.Equal(gotPT, wantPT) {
+			t.Fatalf("Decrypt size %d differs from x/crypto/xts", size)
+		}
+	}
+}
+
+// TestBatchDecryptSectors: DecryptSectors over 8 sectors equals x/crypto/xts
+// sector by sector, with one batch call per sector.
+func TestBatchDecryptSectors(t *testing.T) {
+	ours, ref, calls := batchPair(t)
+	const n, size = 8, 512
+	ct := make([]byte, n*size)
+	for i := range ct {
+		ct[i] = byte(i * 11)
+	}
+	want := make([]byte, len(ct))
+	for s := 0; s < n; s++ {
+		ref.Decrypt(want[s*size:(s+1)*size], ct[s*size:(s+1)*size], uint64(40+s))
+	}
+	got := make([]byte, len(ct))
+	*calls = 0
+	ours.DecryptSectors(got, ct, size, 40)
+	if *calls != n || !bytes.Equal(got, want) {
+		t.Fatalf("DecryptSectors: %d batch calls (want %d), equal=%v", *calls, n, bytes.Equal(got, want))
+	}
+}
+
+// TestBatchNoAlloc: the batch path allocates nothing per call, as the
+// per-block path does not. Not under -race, where sync.Pool drops the
+// pooled tweak on purpose (see raceEnabled).
+func TestBatchNoAlloc(t *testing.T) {
+	if raceEnabled {
+		t.Skip("sync.Pool drops items under -race; allocation counts are checked without it")
+	}
+	ours, _, _ := batchPair(t)
+	buf := make([]byte, 4096)
+	for name, f := range map[string]func(){
+		"Encrypt":        func() { ours.Encrypt(buf[:512], buf[:512], 7) },
+		"Decrypt":        func() { ours.Decrypt(buf[:512], buf[:512], 7) },
+		"DecryptSectors": func() { ours.DecryptSectors(buf, buf, 512, 7) },
+	} {
+		if n := testing.AllocsPerRun(100, f); n != 0 {
+			t.Errorf("%s: %v allocations per call, want 0", name, n)
+		}
+	}
+}
