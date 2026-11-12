@@ -192,20 +192,18 @@ func (c *Cipher) cryptBlocks(dst, src []byte, tweak *[blockSize]byte, encrypt bo
 		return
 	}
 	n := len(src)
+	lo, hi := loadTweak(tweak)
 	for i := 0; i < n; i += blockSize {
-		for j := 0; j < blockSize; j++ {
-			dst[i+j] = src[i+j] ^ tweak[j]
-		}
+		xorTweak(dst[i:i+blockSize], src[i:i+blockSize], lo, hi)
 		if encrypt {
 			c.k1.Encrypt(dst[i:i+blockSize], dst[i:i+blockSize])
 		} else {
 			c.k1.Decrypt(dst[i:i+blockSize], dst[i:i+blockSize])
 		}
-		for j := 0; j < blockSize; j++ {
-			dst[i+j] ^= tweak[j]
-		}
-		mul2(tweak)
+		xorTweak(dst[i:i+blockSize], dst[i:i+blockSize], lo, hi)
+		lo, hi = mul2w(lo, hi)
 	}
+	storeTweak(tweak, lo, hi)
 }
 
 // cryptBatch is cryptBlocks for a Blocks cipher. XTS is
@@ -217,37 +215,53 @@ func (c *Cipher) cryptBlocks(dst, src []byte, tweak *[blockSize]byte, encrypt bo
 // the sector, as after cryptBlocks.
 func cryptBatch(b Blocks, dst, src []byte, tweak *[blockSize]byte, encrypt bool) {
 	n := len(src)
-	t0 := *tweak
+	lo0, hi0 := loadTweak(tweak)
+	lo, hi := lo0, hi0
 	for i := 0; i < n; i += blockSize {
-		for j := 0; j < blockSize; j++ {
-			dst[i+j] = src[i+j] ^ tweak[j]
-		}
-		mul2(tweak)
+		xorTweak(dst[i:i+blockSize], src[i:i+blockSize], lo, hi)
+		lo, hi = mul2w(lo, hi)
 	}
+	storeTweak(tweak, lo, hi)
 	if encrypt {
 		b.EncryptBlocks(dst[:n], dst[:n])
 	} else {
 		b.DecryptBlocks(dst[:n], dst[:n])
 	}
-	t := t0
+	lo, hi = lo0, hi0
 	for i := 0; i < n; i += blockSize {
-		for j := 0; j < blockSize; j++ {
-			dst[i+j] ^= t[j]
-		}
-		mul2(&t)
+		xorTweak(dst[i:i+blockSize], dst[i:i+blockSize], lo, hi)
+		lo, hi = mul2w(lo, hi)
 	}
 }
 
-// mul2 doubles tweak in GF(2^128) with the XTS reduction polynomial
-// x^128 + x^7 + x^2 + x + 1.
-func mul2(tweak *[blockSize]byte) {
-	var carryIn byte
-	for j := range tweak {
-		carryOut := tweak[j] >> 7
-		tweak[j] = (tweak[j] << 1) + carryIn
-		carryIn = carryOut
-	}
-	if carryIn != 0 {
-		tweak[0] ^= 1<<7 | 1<<2 | 1<<1 | 1
-	}
+// The portable path keeps the tweak as two little-endian 64-bit words, lo
+// holding bytes 0-7 and hi bytes 8-15, so that doubling it and XORing it
+// into a block cost a few word operations instead of 16 byte loads, shifts
+// and stores each. The byte order is that of the tweak buffer, which is
+// x/crypto/xts's.
+
+func loadTweak(t *[blockSize]byte) (lo, hi uint64) {
+	return binary.LittleEndian.Uint64(t[:8]), binary.LittleEndian.Uint64(t[8:])
+}
+
+func storeTweak(t *[blockSize]byte, lo, hi uint64) {
+	binary.LittleEndian.PutUint64(t[:8], lo)
+	binary.LittleEndian.PutUint64(t[8:], hi)
+}
+
+// xorTweak sets dst = src ^ (lo, hi) for one 16-byte block.
+func xorTweak(dst, src []byte, lo, hi uint64) {
+	_ = src[15]
+	_ = dst[15]
+	binary.LittleEndian.PutUint64(dst[:8], binary.LittleEndian.Uint64(src[:8])^lo)
+	binary.LittleEndian.PutUint64(dst[8:16], binary.LittleEndian.Uint64(src[8:16])^hi)
+}
+
+// mul2w is mul2 on the two words: a 128-bit left shift by one, and the
+// reduction 0x87 folded into the low byte when bit 127 falls out.
+func mul2w(lo, hi uint64) (uint64, uint64) {
+	carry := hi >> 63
+	hi = hi<<1 | lo>>63
+	lo = lo<<1 ^ 0x87*carry
+	return lo, hi
 }
