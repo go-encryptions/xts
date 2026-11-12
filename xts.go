@@ -172,10 +172,25 @@ func (c *Cipher) tweak(sectorNum uint64) *[blockSize]byte {
 	return t
 }
 
-// cryptBlocks is the portable per-block XTS path, identical in behaviour to
+// Blocks is implemented by a block cipher that can encrypt or decrypt many
+// 16-byte blocks in one call, as in ECB mode, faster than one Encrypt or
+// Decrypt per block (go-encryptions/twofish interleaves four blocks). dst
+// and src have the same length, a multiple of 16, and overlap entirely or
+// not at all.
+type Blocks interface {
+	EncryptBlocks(dst, src []byte)
+	DecryptBlocks(dst, src []byte)
+}
+
+// cryptBlocks is the portable XTS path, identical in output to
 // golang.org/x/crypto/xts. It is used for non-AES ciphers and on architectures
-// without an assembly kernel.
+// without an assembly kernel. A cipher that implements Blocks gets the whole
+// sector in one call; any other one block at a time.
 func (c *Cipher) cryptBlocks(dst, src []byte, tweak *[blockSize]byte, encrypt bool) {
+	if b, ok := c.k1.(Blocks); ok {
+		cryptBatch(b, dst, src, tweak, encrypt)
+		return
+	}
 	n := len(src)
 	for i := 0; i < n; i += blockSize {
 		for j := 0; j < blockSize; j++ {
@@ -190,6 +205,36 @@ func (c *Cipher) cryptBlocks(dst, src []byte, tweak *[blockSize]byte, encrypt bo
 			dst[i+j] ^= tweak[j]
 		}
 		mul2(tweak)
+	}
+}
+
+// cryptBatch is cryptBlocks for a Blocks cipher. XTS is
+// C_i = E(P_i ^ T_i) ^ T_i, and the T_i depend only on the sector, so the
+// three steps can run over the whole sector one after another: XOR every
+// tweak in, one EncryptBlocks call, XOR every tweak out again. The tweaks
+// are recomputed from T_0 for the second XOR rather than stored, which keeps
+// the portable path free of allocations. On return tweak has advanced past
+// the sector, as after cryptBlocks.
+func cryptBatch(b Blocks, dst, src []byte, tweak *[blockSize]byte, encrypt bool) {
+	n := len(src)
+	t0 := *tweak
+	for i := 0; i < n; i += blockSize {
+		for j := 0; j < blockSize; j++ {
+			dst[i+j] = src[i+j] ^ tweak[j]
+		}
+		mul2(tweak)
+	}
+	if encrypt {
+		b.EncryptBlocks(dst[:n], dst[:n])
+	} else {
+		b.DecryptBlocks(dst[:n], dst[:n])
+	}
+	t := t0
+	for i := 0; i < n; i += blockSize {
+		for j := 0; j < blockSize; j++ {
+			dst[i+j] ^= t[j]
+		}
+		mul2(&t)
 	}
 }
 
