@@ -57,6 +57,8 @@ c.EncryptSectors(ciphertext, plaintext, 512, firstSector)
 
 `DecryptSectors` and `EncryptSectors` give exactly what `Decrypt` and `Encrypt` give sector by sector (`TestSectorsMatchPerSector`). A disk reader that decrypts a run of sectors should use them. On arm64 they encrypt the tweaks of 8 sectors in one 8-wide AES pass. Called once per sector, each sector would instead start by waiting for its own tweak, about ten AES rounds of latency that nothing can overlap. That wait is what small sectors pay the most for.
 
+A non-AES cipher that implements `xts.Blocks` (`EncryptBlocks` and `DecryptBlocks`, many 16-byte blocks per call, as in ECB) gets each sector in one call instead of one `cipher.Block` call per block. The tweaks are XORed in over the whole sector, the cipher runs once, and the tweaks are XORed out again. [go-encryptions/twofish](https://github.com/go-encryptions/twofish) interleaves four blocks this way, 2.4× faster than one block at a time. The output is the same either way; `TestBatchMatchesReference` checks it against `x/crypto/xts`.
+
 None of these allocate (`TestNoAllocPerSector`). On amd64 and arm64 the tweak is encrypted in assembly and stays on the stack. The portable path takes its tweak buffer from a `sync.Pool`, as `golang.org/x/crypto/xts` does.
 
 ## Guarantees
