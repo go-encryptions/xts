@@ -3,7 +3,7 @@ module github.com/go-encryptions/xts
 go 1.27.1
 
 require (
-	github.com/go-encryptions/twofish v0.1.1
+	github.com/go-encryptions/twofish v0.1.3
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
 )
