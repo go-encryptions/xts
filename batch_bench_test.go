@@ -1,7 +1,6 @@
 package xts
 
 import (
-	"bytes"
 	"testing"
 
 	"github.com/go-encryptions/twofish"
@@ -12,7 +11,7 @@ import (
 // which interleaves four blocks per call. It is what go-fde/veracrypt's
 // Twofish volumes cost, minus the volume code.
 func BenchmarkBatchTwofish(b *testing.B) {
-	c, err := NewCipher(twofish.NewCipher, bytes.Repeat([]byte{3}, 64))
+	c, err := NewCipher(twofish.NewCipher, distinctKey(64))
 	if err != nil {
 		b.Fatal(err)
 	}

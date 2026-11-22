@@ -1,7 +1,6 @@
 package xts
 
 import (
-	"bytes"
 	"crypto/aes"
 	"fmt"
 	"testing"
@@ -14,7 +13,7 @@ func BenchmarkDecrypt(b *testing.B) {
 	for _, keyLen := range []int{32, 64} {
 		for _, n := range []int{512, 4096} {
 			b.Run(fmt.Sprintf("AES-%d/%d", keyLen*4, n), func(b *testing.B) {
-				c, _ := NewCipher(aes.NewCipher, bytes.Repeat([]byte{7}, keyLen))
+				c, _ := NewCipher(aes.NewCipher, distinctKey(keyLen))
 				buf := make([]byte, n)
 				b.SetBytes(int64(n))
 				b.ReportAllocs()

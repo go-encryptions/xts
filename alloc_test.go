@@ -50,7 +50,7 @@ func TestTweakPoolIsClean(t *testing.T) {
 }
 
 func BenchmarkSector4K(b *testing.B) {
-	c, _ := NewCipher(aes.NewCipher, bytes.Repeat([]byte{7}, 64))
+	c, _ := NewCipher(aes.NewCipher, distinctKey(64))
 	buf := make([]byte, 4096)
 	b.SetBytes(int64(len(buf)))
 	b.ReportAllocs()
