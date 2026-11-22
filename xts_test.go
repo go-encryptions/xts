@@ -358,6 +358,62 @@ func TestIsAESCipherProbeError(t *testing.T) {
 	}
 }
 
+// TestAESProbeNotFooledByKeyTransform: a cipherFunc that reverses its key maps
+// the all-zero probe key to itself, so the zero probe alone takes it for AES.
+// The real key halves must be probed too, or the asm kernel runs with the
+// untransformed key and the ciphertext differs from x/crypto/xts.
+func TestAESProbeNotFooledByKeyTransform(t *testing.T) {
+	rev := func(k []byte) (cipher.Block, error) {
+		r := make([]byte, len(k))
+		for i := range k {
+			r[i] = k[len(k)-1-i]
+		}
+		return aes.NewCipher(r)
+	}
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	c, err := NewCipher(rev, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.accelerated {
+		t.Error("a key-reversing cipherFunc was taken for plain AES")
+	}
+	ref, _ := xref.NewCipher(rev, key)
+	pt := make([]byte, 64)
+	got, want := make([]byte, 64), make([]byte, 64)
+	c.Encrypt(got, pt, 7)
+	ref.Encrypt(want, pt, 7)
+	if !bytes.Equal(got, want) {
+		t.Errorf("custom cipherFunc silently replaced by plain AES:\n got  %x\n want %x", got[:16], want[:16])
+	}
+}
+
+// TestAESProbeSecondHalf: a cipherFunc that is plain AES except for the second
+// key half (the tweak key) is not AES either.
+func TestAESProbeSecondHalf(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	cf := func(k []byte) (cipher.Block, error) {
+		if k[0] == key[16] {
+			k = append([]byte(nil), k...)
+			k[15] ^= 0xff
+		}
+		return aes.NewCipher(k)
+	}
+	c, err := NewCipher(cf, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.accelerated {
+		t.Error("a cipherFunc that alters the tweak key was taken for plain AES")
+	}
+}
+
 type des8 struct{}
 
 func (des8) BlockSize() int          { return 8 }
