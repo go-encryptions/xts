@@ -58,7 +58,7 @@ func TestSectorsMatchPerSector(t *testing.T) {
 }
 
 func TestSectorsRefusals(t *testing.T) {
-	c, _ := NewCipher(aes.NewCipher, make([]byte, 32))
+	c, _ := NewCipher(aes.NewCipher, distinctKey(32))
 	for name, f := range map[string]func(){
 		"sector size 0":  func() { c.DecryptSectors(make([]byte, 32), make([]byte, 32), 0, 0) },
 		"sector size 24": func() { c.DecryptSectors(make([]byte, 48), make([]byte, 48), 24, 0) },
@@ -82,7 +82,7 @@ func BenchmarkDecryptSectors(b *testing.B) {
 	for _, keyLen := range []int{32, 64} {
 		for _, ss := range []int{512, 4096} {
 			b.Run(fmt.Sprintf("AES-%d/%d", keyLen*4, ss), func(b *testing.B) {
-				c, _ := NewCipher(aes.NewCipher, bytes.Repeat([]byte{7}, keyLen))
+				c, _ := NewCipher(aes.NewCipher, distinctKey(keyLen))
 				buf := make([]byte, 1<<20)
 				b.SetBytes(int64(len(buf)))
 				b.ReportAllocs()

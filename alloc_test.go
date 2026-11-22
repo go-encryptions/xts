@@ -11,7 +11,7 @@ import (
 // allocation per sector (go-filesystems/apfs counted 620 per FileVault read).
 func TestNoAllocPerSector(t *testing.T) {
 	for _, keyLen := range []int{32, 64} { // AES-128-XTS and AES-256-XTS
-		c, err := NewCipher(aes.NewCipher, bytes.Repeat([]byte{7}, keyLen))
+		c, err := NewCipher(aes.NewCipher, distinctKey(keyLen))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -33,7 +33,7 @@ func TestNoAllocPerSector(t *testing.T) {
 // The pooled tweak does not carry one sector's state into the next: the
 // same sector encrypts the same way whatever came before.
 func TestTweakPoolIsClean(t *testing.T) {
-	c, err := NewCipher(aes.NewCipher, bytes.Repeat([]byte{9}, 32))
+	c, err := NewCipher(aes.NewCipher, distinctKey(32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestTweakPoolIsClean(t *testing.T) {
 }
 
 func BenchmarkSector4K(b *testing.B) {
-	c, _ := NewCipher(aes.NewCipher, bytes.Repeat([]byte{7}, 64))
+	c, _ := NewCipher(aes.NewCipher, distinctKey(64))
 	buf := make([]byte, 4096)
 	b.SetBytes(int64(len(buf)))
 	b.ReportAllocs()

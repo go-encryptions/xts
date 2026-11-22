@@ -53,6 +53,8 @@ c.DecryptSectors(plaintext, ciphertext, 512, firstSector)
 c.EncryptSectors(ciphertext, plaintext, 512, firstSector)
 ```
 
+`NewCipher` refuses a key whose two halves are equal (`ErrEqualKeys`), as IEEE 1619-2018 section 5.1 and FIPS 140-3 IG C.I require; `x/crypto/xts` accepts it. `NewCipherAllowEqualKeys` is the same constructor without that check, for reading data written under such a key. It gives the same ciphertext as `x/crypto/xts`.
+
 `Encrypt` and `Decrypt` operate on a whole disk sector at a time; `sectorNum` is the tweak (the sector index). Buffers must be a whole number of 16-byte blocks and at least one block long, matching the `x/crypto/xts` contract.
 
 `DecryptSectors` and `EncryptSectors` give exactly what `Decrypt` and `Encrypt` give sector by sector (`TestSectorsMatchPerSector`). A disk reader that decrypts a run of sectors should use them. On arm64 they encrypt the tweaks of 8 sectors in one 8-wide AES pass. Called once per sector, each sector would instead start by waiting for its own tweak, about ten AES rounds of latency that nothing can overlap. That wait is what small sectors pay the most for.

@@ -5,11 +5,48 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/hex"
+	"errors"
 	"math/rand"
 	"testing"
 
 	xref "golang.org/x/crypto/xts"
 )
+
+// distinctKey returns an n-byte key whose two halves differ.
+func distinctKey(n int) []byte {
+	k := make([]byte, n)
+	for i := range k {
+		k[i] = byte(i + 1)
+	}
+	return k
+}
+
+// TestEqualKeyHalves: IEEE 1619-2018 section 5.1 requires Key1 != Key2.
+// NewCipher refuses it; NewCipherAllowEqualKeys matches x/crypto/xts.
+func TestEqualKeyHalves(t *testing.T) {
+	for _, n := range []int{32, 64} {
+		key := bytes.Repeat([]byte{0x11}, n)
+		if _, err := NewCipher(aes.NewCipher, key); err != ErrEqualKeys {
+			t.Errorf("len %d: NewCipher err = %v, want ErrEqualKeys", n, err)
+		}
+		c, err := NewCipherAllowEqualKeys(aes.NewCipher, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, _ := xref.NewCipher(aes.NewCipher, key)
+		pt := make([]byte, 64)
+		got, want := make([]byte, 64), make([]byte, 64)
+		c.Encrypt(got, pt, 5)
+		ref.Encrypt(want, pt, 5)
+		if !bytes.Equal(got, want) {
+			t.Errorf("len %d: opt-out ciphertext differs from x/crypto/xts", n)
+		}
+	}
+	// Halves differing in one byte are accepted.
+	if _, err := NewCipher(aes.NewCipher, distinctKey(32)); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // mustHex decodes a hex string or fails the test.
 func mustHex(t *testing.T, s string) []byte {
@@ -71,7 +108,8 @@ func TestKnownAnswerVectors(t *testing.T) {
 			key := mustHex(t, v.key)
 			pt := mustHex(t, v.plain)
 			want := mustHex(t, v.cipher)
-			c, err := NewCipher(aes.NewCipher, key)
+			// IEEE 1619 vector 1 uses Key1 == Key2, which NewCipher refuses.
+			c, err := NewCipherAllowEqualKeys(aes.NewCipher, key)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -138,7 +176,7 @@ func TestMatchesReference(t *testing.T) {
 // TestEmptySector: an empty sector is a no-op, as in x/crypto/xts, on the
 // accelerated path that takes no address of its first byte.
 func TestEmptySector(t *testing.T) {
-	c, err := NewCipher(aes.NewCipher, make([]byte, 32))
+	c, err := NewCipher(aes.NewCipher, distinctKey(32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,26 +297,32 @@ func TestForcePortableAES(t *testing.T) {
 
 func TestNewCipherErrors(t *testing.T) {
 	// Wrong key length for AES surfaces from cipherFunc.
-	if _, err := NewCipher(aes.NewCipher, make([]byte, 30)); err == nil {
-		t.Fatal("expected error for invalid AES key length")
+	var kse aes.KeySizeError
+	if _, err := NewCipher(aes.NewCipher, distinctKey(30)); !errors.As(err, &kse) {
+		t.Fatalf("invalid AES key length: err = %v, want aes.KeySizeError", err)
 	}
 	// A cipher with a non-16 block size must be rejected.
 	if _, err := NewCipher(func(k []byte) (cipher.Block, error) {
 		return des8{}, nil
-	}, make([]byte, 16)); err == nil {
-		t.Fatal("expected error for 8-byte block size")
+	}, distinctKey(16)); err == nil || errors.Is(err, ErrEqualKeys) {
+		t.Fatalf("8-byte block size: err = %v, want the block size error", err)
 	}
-	// cipherFunc failing on the second (k2) key half.
-	calls := 0
-	_, err := NewCipher(func(k []byte) (cipher.Block, error) {
-		calls++
-		if calls == 2 {
-			return nil, errFake
+	// cipherFunc failing on the first (k1), then on the second (k2) key half.
+	for _, failOn := range []int{1, 2} {
+		calls := 0
+		_, err := NewCipher(func(k []byte) (cipher.Block, error) {
+			calls++
+			if calls == failOn {
+				return nil, errFake
+			}
+			return fakeBlock{k: k}, nil
+		}, distinctKey(32))
+		if err != errFake {
+			t.Fatalf("cipherFunc failing on call %d: err = %v, want errFake", failOn, err)
 		}
-		return fakeBlock{k: k}, nil
-	}, make([]byte, 32))
-	if err == nil {
-		t.Fatal("expected error from k2 cipherFunc")
+		if calls != failOn {
+			t.Fatalf("cipherFunc failing on call %d: made %d calls", failOn, calls)
+		}
 	}
 }
 
@@ -327,8 +371,10 @@ type bytesError string
 func (e bytesError) Error() string { return string(e) }
 
 func TestPanics(t *testing.T) {
-	key := make([]byte, 64)
-	c, _ := NewCipher(aes.NewCipher, key)
+	c, err := NewCipher(aes.NewCipher, distinctKey(64))
+	if err != nil {
+		t.Fatal(err)
+	}
 	mustPanic(t, "short ct", func() { c.Encrypt(make([]byte, 8), make([]byte, 16), 0) })
 	mustPanic(t, "non-block pt", func() { c.Encrypt(make([]byte, 16), make([]byte, 8), 0) })
 	mustPanic(t, "short pt dec", func() { c.Decrypt(make([]byte, 8), make([]byte, 16), 0) })
