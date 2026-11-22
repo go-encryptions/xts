@@ -15,7 +15,7 @@ import (
 // otherwise it reports false and Encrypt/Decrypt use the portable path.
 func (c *Cipher) trySetupAccel(cipherFunc func([]byte) (cipher.Block, error), key []byte) bool {
 	dataKey := key[:len(key)/2]
-	if accelAvailable && isAESKeyLen(len(dataKey)) && isAESCipher(cipherFunc) {
+	if accelAvailable && isAESKeyLen(len(dataKey)) && isAESCipher(cipherFunc, key) {
 		c.enc = expandEnc(dataKey)
 		c.dec = expandDec(dataKey)
 		c.tenc = expandEnc(key[len(key)/2:])
@@ -109,11 +109,21 @@ func (c *Cipher) sectorsAccel(dst, src []byte, sectorSize int, first uint64, enc
 func isAESKeyLen(n int) bool { return n == 16 || n == 24 || n == 32 }
 
 // isAESCipher reports whether cipherFunc is crypto/aes.NewCipher by comparing
-// the block produced against a freshly created AES block. This guards the
-// accelerated path so that a custom 16-byte block cipher never gets silently
-// replaced by AES.
-func isAESCipher(cipherFunc func([]byte) (cipher.Block, error)) bool {
-	probe := make([]byte, 16)
+// the block it produces against a freshly created AES block, for the all-zero
+// key and for each of the two real key halves. This guards the accelerated path
+// so that a custom block cipher never gets silently replaced by AES. The zero
+// key alone is not enough: a cipherFunc that transforms its key (a reversal, a
+// byte swap) maps the zero key to itself and would pass for plain AES.
+func isAESCipher(cipherFunc func([]byte) (cipher.Block, error), key []byte) bool {
+	half := len(key) / 2
+	return agreesWithAES(cipherFunc, make([]byte, 16)) &&
+		agreesWithAES(cipherFunc, key[:half]) &&
+		agreesWithAES(cipherFunc, key[half:])
+}
+
+// agreesWithAES reports whether cipherFunc(k) encrypts a known vector like
+// aes.NewCipher(k) does.
+func agreesWithAES(cipherFunc func([]byte) (cipher.Block, error), probe []byte) bool {
 	b, err := cipherFunc(probe)
 	if err != nil {
 		return false
