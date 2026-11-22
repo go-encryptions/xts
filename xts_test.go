@@ -11,6 +11,42 @@ import (
 	xref "golang.org/x/crypto/xts"
 )
 
+// distinctKey returns an n-byte key whose two halves differ.
+func distinctKey(n int) []byte {
+	k := make([]byte, n)
+	for i := range k {
+		k[i] = byte(i + 1)
+	}
+	return k
+}
+
+// TestEqualKeyHalves: IEEE 1619-2018 section 5.1 requires Key1 != Key2.
+// NewCipher refuses it; NewCipherAllowEqualKeys matches x/crypto/xts.
+func TestEqualKeyHalves(t *testing.T) {
+	for _, n := range []int{32, 64} {
+		key := bytes.Repeat([]byte{0x11}, n)
+		if _, err := NewCipher(aes.NewCipher, key); err != ErrEqualKeys {
+			t.Errorf("len %d: NewCipher err = %v, want ErrEqualKeys", n, err)
+		}
+		c, err := NewCipherAllowEqualKeys(aes.NewCipher, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, _ := xref.NewCipher(aes.NewCipher, key)
+		pt := make([]byte, 64)
+		got, want := make([]byte, 64), make([]byte, 64)
+		c.Encrypt(got, pt, 5)
+		ref.Encrypt(want, pt, 5)
+		if !bytes.Equal(got, want) {
+			t.Errorf("len %d: opt-out ciphertext differs from x/crypto/xts", n)
+		}
+	}
+	// Halves differing in one byte are accepted.
+	if _, err := NewCipher(aes.NewCipher, distinctKey(32)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // mustHex decodes a hex string or fails the test.
 func mustHex(t *testing.T, s string) []byte {
 	t.Helper()
@@ -71,7 +107,8 @@ func TestKnownAnswerVectors(t *testing.T) {
 			key := mustHex(t, v.key)
 			pt := mustHex(t, v.plain)
 			want := mustHex(t, v.cipher)
-			c, err := NewCipher(aes.NewCipher, key)
+			// IEEE 1619 vector 1 uses Key1 == Key2, which NewCipher refuses.
+			c, err := NewCipherAllowEqualKeys(aes.NewCipher, key)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -138,7 +175,7 @@ func TestMatchesReference(t *testing.T) {
 // TestEmptySector: an empty sector is a no-op, as in x/crypto/xts, on the
 // accelerated path that takes no address of its first byte.
 func TestEmptySector(t *testing.T) {
-	c, err := NewCipher(aes.NewCipher, make([]byte, 32))
+	c, err := NewCipher(aes.NewCipher, distinctKey(32))
 	if err != nil {
 		t.Fatal(err)
 	}

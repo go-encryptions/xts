@@ -25,6 +25,7 @@ package xts
 
 import (
 	"crypto/cipher"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"sync"
@@ -56,7 +57,25 @@ type Cipher struct {
 // cipher (which must have a 16-byte block size) and a key that is twice the
 // underlying cipher's key length. For AES this is a 32-byte key (AES-128-XTS)
 // or a 64-byte key (AES-256-XTS).
+//
+// NewCipher refuses a key whose two halves are equal (ErrEqualKeys), as IEEE
+// Std 1619-2018 section 5.1 and FIPS 140-3 IG C.I require. This is stricter
+// than golang.org/x/crypto/xts; use NewCipherAllowEqualKeys to accept such a
+// key, for instance to read data written by an implementation that did.
 func NewCipher(cipherFunc func([]byte) (cipher.Block, error), key []byte) (*Cipher, error) {
+	if subtle.ConstantTimeCompare(key[:len(key)/2], key[len(key)/2:]) == 1 {
+		return nil, ErrEqualKeys
+	}
+	return NewCipherAllowEqualKeys(cipherFunc, key)
+}
+
+// ErrEqualKeys is returned by NewCipher when Key1 and Key2 are equal.
+var ErrEqualKeys = errors.New("xts: the two key halves are equal (forbidden by IEEE 1619-2018 section 5.1)")
+
+// NewCipherAllowEqualKeys is NewCipher without the Key1 != Key2 check. It
+// produces the same ciphertext as golang.org/x/crypto/xts for every key. Use
+// it only for compatibility with data written under an equal-halves key.
+func NewCipherAllowEqualKeys(cipherFunc func([]byte) (cipher.Block, error), key []byte) (*Cipher, error) {
 	c := new(Cipher)
 	var err error
 	if c.k1, err = cipherFunc(key[:len(key)/2]); err != nil {
