@@ -313,7 +313,11 @@ func TestNewCipherErrors(t *testing.T) {
 		_, err := NewCipher(func(k []byte) (cipher.Block, error) {
 			calls++
 			if calls == failOn {
-				return nil, errFake
+				// A usable block WITH the error: a missing guard then
+				// returns (c, nil) and fails this assertion by value,
+				// instead of dying on a nil-block panic that would end the
+				// test binary.
+				return fakeBlock{k: k}, errFake
 			}
 			return fakeBlock{k: k}, nil
 		}, distinctKey(32))
